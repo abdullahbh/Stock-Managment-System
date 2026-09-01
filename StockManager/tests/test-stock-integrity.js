@@ -168,13 +168,13 @@ section('C. closed-day gates on every write', () => {
   const DAY = '2026-06-01';
   const base = { customer_code: 'C1', customer_name: 'Shop', van: 'V1', bill_date: DAY };
 
-  // createBill blocked on closed day, writes nothing
+  // createBill on a closed day now ROLLS FORWARD to the next open day (never blocked)
   db.closeDay(DAY);
-  checkThrows('C: createBill blocked (closed)',
-    () => db.createBill({ ...base, items: [{ product_id: E, kind: 'SALE', pcs: 10 }] }),
-    /Date 2026-06-01 is closed\. Re-open it to add bills\./);
-  check('C: createBill wrote no bill', billCount(), 0);
-  check('C: createBill left stock intact', stockOf(E), 1000);
+  const rolledBill = db.createBill({ ...base, items: [{ product_id: E, kind: 'SALE', pcs: 10 }] });
+  check('C: createBill on closed day rolls forward', rolledBill.bill_date, '2026-06-02');
+  check('C: rolled bill is the only one written', billCount(), 1);
+  db.deleteBill(rolledBill.id);   // undo the roll-forward so the section continues from a clean slate
+  check('C: createBill undone leaves stock intact', stockOf(E), 1000);
   db.openDay(DAY);
 
   // real bill for the remaining gate tests: 10 pcs -> stock 990
@@ -195,16 +195,16 @@ section('C. closed-day gates on every write', () => {
   check('C: deleteBill left stock intact', stockOf(E), 990);
   db.openDay(DAY);
 
-  // createSalesReturn blocked on closed day
+  // createSalesReturn on a closed day now ROLLS FORWARD to the next open day (never blocked)
   const src = db.getBillForReturn(bill.id);
   const saleLine = src.items.find(i => i.kind === 'SALE' && i.product_id === E);
   db.closeDay(DAY);
-  checkThrows('C: createSalesReturn blocked (closed)',
-    () => db.createSalesReturn({ return_date: DAY, bill_id: bill.id, bill_number: src.bill_number,
-      customer_code: 'C1', van: 'V1', items: [
-        { bill_item_id: saleLine.bill_item_id, product_id: E, kind: 'GOOD', pcs: 5, unit_price: 10 }] }),
-    /Date 2026-06-01 is closed\. Re-open it to add returns\./);
-  check('C: createSalesReturn left stock intact', stockOf(E), 990);
+  const rolledRet = db.createSalesReturn({ return_date: DAY, bill_id: bill.id, bill_number: src.bill_number,
+    customer_code: 'C1', van: 'V1', items: [
+      { bill_item_id: saleLine.bill_item_id, product_id: E, kind: 'GOOD', pcs: 5, unit_price: 10 }] });
+  check('C: createSalesReturn on closed day rolls forward', rolledRet.return_date, '2026-06-02');
+  db.deleteSalesReturn(rolledRet.id);   // undo so stock and remaining pcs are unchanged
+  check('C: createSalesReturn undone leaves stock intact', stockOf(E), 990);
   db.openDay(DAY);
 
   // a real return (GOOD 5) -> stock 995, then deleteSalesReturn blocked on closed day

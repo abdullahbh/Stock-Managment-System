@@ -159,6 +159,8 @@ function initialize(dbPath, brandDefaults) {
       id   INTEGER PRIMARY KEY AUTOINCREMENT,
       kind TEXT NOT NULL,               -- 'van' | 'booker' | 'dm'
       name TEXT NOT NULL,
+      booker TEXT DEFAULT '',           -- van's usual order booker (kind='van' rows only)
+      dm     TEXT DEFAULT '',           -- van's usual delivery man (kind='van' rows only)
       UNIQUE(kind, name)
     );
 
@@ -269,6 +271,8 @@ function initialize(dbPath, brandDefaults) {
   ensureCol('sales_returns', 'discount', 'REAL DEFAULT 0');
   ensureCol('products', 'grp', "TEXT DEFAULT ''");
   ensureCol('schemes', 'grp', "TEXT DEFAULT ''");
+  ensureCol('route_masters', 'booker', "TEXT DEFAULT ''");
+  ensureCol('route_masters', 'dm', "TEXT DEFAULT ''");
 
   // Indexes for the hot paths (lists, duplicate check, joins). IF NOT EXISTS = safe on upgrade.
   db.exec(`
@@ -549,9 +553,8 @@ function deleteScheme(id) {
 }
 
 // ── Billing ─────────────────────────────────────────────────────
-function generateBillNumber(prefix) {
-  const d = new Date();
-  const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+function generateBillNumber(prefix, ymd) {
+  const dateStr = ymd ? String(ymd).replace(/-/g, '') : _localYMD(new Date()).replace(/-/g, '');
   const stem = `${prefix || 'INV'}-${dateStr}-`;
   let n = 0;
   for (const r of db.prepare('SELECT bill_number FROM bills WHERE bill_number LIKE ?').all(stem + '%'))
@@ -654,10 +657,10 @@ const _BILL_ITEM_COLS = `INSERT INTO bill_items (bill_id, product_id, sku_code, 
    pcs_per_dozen, unit_price, cost, line_total, trade_offer, trade_offer_pct, scheme_id, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
 
 function createBill(bill) {
-  const billNumber = generateBillNumber(bill.prefix);
-  const billDate = bill.bill_date || new Date().toISOString().slice(0, 10);
+  // a new bill never lands on a locked day: it rolls forward to the next open one
+  const billDate = _nextOpenDay(bill.bill_date || getCurrentDay());
+  const billNumber = generateBillNumber(bill.prefix, billDate);
   const tx = db.transaction(() => {
-    if (isDayClosed(billDate)) throw new Error(`Date ${billDate} is closed. Re-open it to add bills.`);
     if (!String(bill.van || '').trim()) throw new Error('Choose a van before saving the bill.');
     if (bill.customer_code && bill.van) {
       const dup = db.prepare("SELECT bill_number FROM bills WHERE customer_code=? AND van=? AND date(bill_date)=?")
@@ -674,6 +677,7 @@ function createBill(bill) {
       c.subtotal, c.tradeOffer, c.manualTO, c.manualPct, c.taxPct, c.taxAmount, c.discount, bill.scheme_off ? 1 : 0, c.total, c.notes);
     try { _touchCustomerFromBill(bill); } catch (e) {}
     _rememberMasters(bill);
+    if (String(bill.van || '').trim()) setVanCrew(bill.van, bill.booker, bill.delivery_man);
     const billId = billInfo.lastInsertRowid;
     const insItem = db.prepare(_BILL_ITEM_COLS);
     for (const l of c.items) {
@@ -682,7 +686,7 @@ function createBill(bill) {
       insItem.run(billId, l.product_id, l.sku_code, l.product_name, l.kind, l.pcs, l.pcs_per_dozen, l.unit_price, l.cost, l.line_total, l.trade_offer||0, l.trade_offer_pct||0, l.scheme_id, l.note);
       db.prepare(`UPDATE products SET stock_qty = stock_qty - ?, updated_at=datetime('now','localtime') WHERE id=?`).run(l.pcs, l.product_id);
     }
-    return { id: billId, bill_number: billNumber, subtotal: c.subtotal, trade_offer: c.tradeOffer, total: c.total };
+    return { id: billId, bill_number: billNumber, bill_date: billDate, subtotal: c.subtotal, trade_offer: c.tradeOffer, total: c.total };
   });
   return tx();
 }
@@ -715,6 +719,7 @@ function updateBill(id, bill) {
         c.subtotal, c.tradeOffer, c.manualTO, c.manualPct, c.taxPct, c.taxAmount, c.discount, bill.scheme_off ? 1 : 0, c.total, c.notes, id);
     try { _touchCustomerFromBill(bill); } catch (e) {}
     _rememberMasters(bill);
+    if (String(bill.van || '').trim()) setVanCrew(bill.van, bill.booker, bill.delivery_man);
     const insItem = db.prepare(_BILL_ITEM_COLS);
     for (const l of c.items) {
       const prod = db.prepare('SELECT stock_qty, name FROM products WHERE id=?').get(l.product_id);
@@ -727,10 +732,30 @@ function updateBill(id, bill) {
   return tx();
 }
 
-// ── Day open / close ────────────────────────────────────────────
+// ── Day open / close + the working day ──────────────────────────
+// The "working day" is the date new bills / purchases / returns default to. It stays put
+// across real calendar days and only advances when the owner closes the current working day.
+function _localYMD(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function _addDays(ymd,n){ const d=new Date(ymd+'T00:00:00'); d.setDate(d.getDate()+n); return _localYMD(d); }
+function _nextOpenDay(ymd){ let d=ymd; for(let i=0;i<400;i++){ if(!isDayClosed(d)) return d; d=_addDays(d,1); } return d; }
+function _setCurrentDay(ymd){ db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('current_day',?)").run(ymd); }
+function getCurrentDay(){
+  let cur = (db.prepare("SELECT value FROM settings WHERE key='current_day'").get()||{}).value;
+  if(!cur){ cur = _localYMD(new Date()); _setCurrentDay(cur); }
+  if(isDayClosed(cur)){ cur = _nextOpenDay(cur); _setCurrentDay(cur); }
+  return cur;
+}
 function isDayClosed(date){ return !!db.prepare('SELECT 1 FROM closed_days WHERE date=?').get(date); }
-function closeDay(date){ db.prepare("INSERT OR IGNORE INTO closed_days (date) VALUES (?)").run(date); return { success:true }; }
-function openDay(date){ db.prepare('DELETE FROM closed_days WHERE date=?').run(date); return { success:true }; }
+function closeDay(date){
+  db.prepare("INSERT OR IGNORE INTO closed_days (date) VALUES (?)").run(date);
+  if(date === getCurrentDay()) _setCurrentDay(_nextOpenDay(_addDays(date,1)));
+  return { success:true, current_day: getCurrentDay() };
+}
+function openDay(date){
+  db.prepare('DELETE FROM closed_days WHERE date=?').run(date);
+  if(date < getCurrentDay()) _setCurrentDay(date);
+  return { success:true, current_day: getCurrentDay() };
+}
 function listClosedDays(){ return db.prepare('SELECT * FROM closed_days ORDER BY date DESC LIMIT 200').all(); }
 
 // ── Purchases (stock in) ────────────────────────────────────────
@@ -741,7 +766,7 @@ function generatePurchaseNumber(){
 }
 function createPurchase(p){
   const number = generatePurchaseNumber();
-  const pdate = p.purchase_date || new Date().toISOString().slice(0,10);
+  const pdate = _nextOpenDay(p.purchase_date || getCurrentDay());
   const tx = db.transaction(()=>{
     const items = (p.items||[]).filter(it=>it.product_id).map(it=>{
       const prod = db.prepare('SELECT * FROM products WHERE id=?').get(it.product_id);
@@ -762,7 +787,7 @@ function createPurchase(p){
       db.prepare(`UPDATE products SET stock_qty = stock_qty + ?, cost = CASE WHEN ?>0 THEN ? ELSE cost END,
         updated_at=datetime('now','localtime') WHERE id=?`).run(l.pcs, l.unit_cost, l.unit_cost, l.product_id);
     }
-    return { id:pid, purchase_number:number, total };
+    return { id:pid, purchase_number:number, total, purchase_date:pdate };
   });
   return tx();
 }
@@ -812,9 +837,9 @@ function _priorReturned(billId){
  */
 function createSalesReturn(r){
   const number = generateReturnNumber(r.prefix);
-  const rdate = r.return_date || new Date().toISOString().slice(0,10);
+  // a new return never lands on a locked day: it rolls forward to the next open one
+  const rdate = _nextOpenDay(r.return_date || getCurrentDay());
   const tx = db.transaction(()=>{
-    if(isDayClosed(rdate)) throw new Error(`Date ${rdate} is closed. Re-open it to add returns.`);
     const billId = r.bill_id || null;
     const bill = billId ? db.prepare('SELECT * FROM bills WHERE id=?').get(billId) : null;
     if(billId && !bill) throw new Error('Bill not found');
@@ -879,7 +904,7 @@ function createSalesReturn(r){
       if(l.kind === 'GOOD')
         db.prepare(`UPDATE products SET stock_qty = stock_qty + ?, updated_at=datetime('now','localtime') WHERE id=?`).run(l.pcs, l.product_id);
     }
-    return { id:rid, return_number:number, total, restocked:restock };
+    return { id:rid, return_number:number, total, restocked:restock, return_date:rdate };
   });
   return tx();
 }
@@ -1086,6 +1111,15 @@ function listMasters(kind){ return db.prepare('SELECT * FROM route_masters WHERE
 function addMaster(kind, name){ if(!name) return {success:false};
   db.prepare('INSERT OR IGNORE INTO route_masters (kind,name) VALUES (?,?)').run(kind, String(name).trim()); return {success:true}; }
 function deleteMaster(id){ db.prepare('DELETE FROM route_masters WHERE id=?').run(id); return {success:true}; }
+// a van remembers its usual crew; auto-learned every time a bill is saved, still editable
+function setVanCrew(van, booker, dm){
+  const name = String(van||'').trim();
+  if(!name) return { success:false };
+  db.prepare("INSERT OR IGNORE INTO route_masters (kind,name) VALUES ('van',?)").run(name);
+  db.prepare("UPDATE route_masters SET booker=?, dm=? WHERE kind='van' AND name=?")
+    .run(String(booker||'').trim(), String(dm||'').trim(), name);
+  return { success:true };
+}
 function _rememberMasters(b){
   try{
     if(b.van) addMaster('van', b.van);
@@ -1433,6 +1467,7 @@ function getDashboardStats() {
 function getSettings() {
   const o = {};
   for (const r of db.prepare('SELECT * FROM settings').all()) o[r.key] = r.value;
+  o.current_day = getCurrentDay();
   return o;
 }
 function updateSettings(s) {
@@ -1448,12 +1483,12 @@ module.exports = {
   getAllSchemes, addScheme, updateScheme, deleteScheme,
   resetData, checkpoint, closeDb, getDataStats, loadSampleData, setSamplePrefixes,
   _schemeCost, createBill, updateBill, getAllBills, getBillById, deleteBill, getBillsMany,
-  isDayClosed, closeDay, openDay, listClosedDays,
+  isDayClosed, closeDay, openDay, listClosedDays, getCurrentDay,
   createPurchase, getAllPurchases, getPurchaseById, deletePurchase,
   createSalesReturn, getAllSalesReturns, getSalesReturnById, deleteSalesReturn, getBillForReturn, getReturnsForBill,
   createTaxInvoice, getTaxInvoice, processLoadReturn, getBillSummary,
   getCustomers, findCustomer, addCustomer, upsertCustomer, deleteCustomer,
-  listMasters, addMaster, deleteMaster,
+  listMasters, addMaster, deleteMaster, setVanCrew,
   listBillsForLoad, generateLoadForm, getLoadForm, getAllLoadForms,
   updateLoadFormLine, setLoadFormStatus, deleteLoadForm,
   getProfitSummary, getProfitReport,

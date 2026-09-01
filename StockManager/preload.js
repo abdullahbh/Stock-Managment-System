@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   listMasters:  (kind) => invoke('masters:list', kind),
   addMaster:    (d) => invoke('masters:add', d),
   deleteMaster: (id) => invoke('masters:delete', id),
+  setVanCrew:   (van,booker,dm) => invoke('masters:setVanCrew',{van,booker,dm}),
   // bill edit
   updateBill:   (id, bill) => invoke('bills:update', { id, bill }),
   // day open/close

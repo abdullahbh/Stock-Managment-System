@@ -88,10 +88,11 @@ thr('empty return rejected',()=>db.createSalesReturn(mk({items:[{product_id:p1.i
 thr('unknown product rejected',()=>db.createSalesReturn(mk({items:[{product_id:99999,kind:'GOOD',pcs:1,unit_price:10}]})),
   /^Product not found: 99999$/);
 
-// ── closed-day gate, both ways ─────────────────────────────────
+// ── closed-day gate: a DELETE is still blocked, a new return now ROLLS FORWARD ──
 db.closeDay(TODAY);
-thr('create blocked on a closed day',()=>db.createSalesReturn(mk({items:[{product_id:p1.id,kind:'GOOD',pcs:1,unit_price:10}]})),
-  new RegExp(`^Date ${TODAY} is closed. Re-open it to add returns.$`));
+const rolled=db.createSalesReturn(mk({bill_id:null,bill_number:'',items:[{product_id:p1.id,kind:'GOOD',pcs:1,unit_price:10}]}));
+check('create on a closed day rolls forward, not blocked',[rolled.return_date!==TODAY,db.isDayClosed(rolled.return_date)],[true,false]);
+db.deleteSalesReturn(rolled.id);   // undo the roll-forward so the rest of the suite sees unchanged state
 thr('delete blocked on a closed day',()=>db.deleteSalesReturn(R1.id),
   new RegExp(`^Date ${TODAY} is closed. Re-open it to delete returns.$`));
 db.openDay(TODAY);

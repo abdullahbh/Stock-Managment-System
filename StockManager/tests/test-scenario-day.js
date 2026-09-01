@@ -173,12 +173,14 @@ checkThrows('duplicate (shop,van,day) blocked', () => db.createBill({
 checkThrows('missing van rejected', () => db.createBill({
   prefix: 'DAY', bill_date: TODAY, customer_code: 'C099', customer_name: 'Shop C099',
   van: '', items: [{ product_id: idOf.HON, kind: 'SALE', pcs: 12 }] }), /van/i);
-// closed day (isolated date, does not touch TODAY)
+// closed day (isolated date, does not touch TODAY): a new bill now ROLLS FORWARD, never blocked
 db.closeDay('2001-01-01');
-checkThrows('closed day rejected', () => db.createBill({
+const rolled = db.createBill({
   prefix: 'DAY', bill_date: '2001-01-01', customer_code: 'C098', customer_name: 'Shop C098',
-  van: 'VAN-A', items: [{ product_id: idOf.HON, kind: 'SALE', pcs: 12 }] }), /closed/i);
-// none of the three should have inserted a bill
+  van: 'VAN-A', items: [{ product_id: idOf.HON, kind: 'SALE', pcs: 12 }] });
+check('closed day rolls the bill to the next open day', rolled.bill_date, '2001-01-02');
+db.deleteBill(rolled.id);   // undo the roll-forward so the count invariant below still holds
+// the duplicate + missing-van calls inserted nothing, and the rolled bill was removed
 check('exactly 15 bills exist', db.getAllBills({}).length, 15);
 
 section('SALES RETURNS: bill-linked partial, damaged, standalone bulk');

@@ -196,6 +196,7 @@ ipcMain.handle('customers:delete', h((id) => dbCall('deleteCustomer', id)));
 ipcMain.handle('masters:list', h((kind) => dbCall('listMasters', kind)));
 ipcMain.handle('masters:add',  h((d) => dbCall('addMaster', d.kind, d.name)));
 ipcMain.handle('masters:delete', h((id) => dbCall('deleteMaster', id)));
+ipcMain.handle('masters:setVanCrew', h((d) => dbCall('setVanCrew', d.van, d.booker, d.dm)));
 
 // bill edit
 ipcMain.handle('bills:update', h((d) => dbCall('updateBill', d.id, d.bill)));

@@ -43,9 +43,9 @@ check('addCustomer inserts',db.findCustomer('NEW1').name,'Fresh Shop');
 thr('addCustomer dup throws',()=>db.addCustomer({code:'NEW1',name:'Other'}),
   /^Shop code "NEW1" already belongs to "Fresh Shop"\. Delete that shop first before adding a new one on this code\.$/);
 
-// bill numbering: local date + max suffix, survives deletion
-const d=new Date(), ds=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
-check('bill number local date',db.getBillById(r.id).bill_number,`INV-${ds}-001`);
+// bill numbering: stems from the bill's own (effective) date + max suffix, survives deletion
+const ds='20260829';   // r was created with bill_date 2026-08-29; the number now follows that date, not the wall clock
+check('bill number from bill date',db.getBillById(r.id).bill_number,`INV-${ds}-001`);
 const last=db.getAllBills({})[0];
 db.deleteBill(last.id);
 const r3=db.createBill({bill_date:'2026-08-29',customer_code:'CZ',customer_name:'Z',van:'VZ',

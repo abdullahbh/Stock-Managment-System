@@ -440,6 +440,7 @@ const masterSelect = (id, arr, current, ph)=>{
   const opts=[...new Set(names.concat(cur && !names.includes(cur) ? [cur] : []))];
   return `<select id="${id}"><option value="">${esc(ph||'—')}</option>${opts.map(n=>`<option value="${esc(n)}"${n===cur?' selected':''}>${esc(n)}</option>`).join('')}</select>`;
 };
+const vanCrew = (name)=> (S.vans||[]).find(v=>v.name===name) || {};
 const prodByCode = (code)=> _pMap.get(String(code||'').trim()) || null;
 const custByCode = (code)=> _cMap.get(String(code||'').trim()) || null;
 const prodDatalist = ()=>`<datalist id="prodcodes">${S.products.map(p=>`<option value="${esc(p.sku_code)}">${esc(p.sku_code+' · '+p.name)}</option>`).join('')}</datalist>`;
@@ -819,7 +820,7 @@ VIEWS.newbill = async () => {
   renderBill();
   setTimeout(()=>{ const c=$('#b_code'); if(c && !draft.editId && !c.value) c.focus(); }, 40);
 };
-function newDraft(){ return { lines:[ blankLine() ], bill_date:today(), shop_code:'', shop_name:'',
+function newDraft(){ return { lines:[ blankLine() ], bill_date:(S.settings && S.settings.current_day) || today(), shop_code:'', shop_name:'',
   shop_addr:'', class:'', tax_pct:+(S.settings.tax_rate||0), discount:0, manual_trade_offer:0, manual_trade_offer_pct:0, notes:'', scheme_off:false }; }
 function blankLine(){ return { code:'', product_id:'', kind:'SALE', doz:0, pcs:0, unit_price:0, trade_offer:0, trade_offer_pct:0 }; }
 function lineTotalPcs(l){ const p=prodById(l.product_id); const ppd=p?p.pcs_per_dozen:12; return (+l.doz||0)*ppd + (+l.pcs||0); }
@@ -923,6 +924,14 @@ function renderBill(){
   const rebind=()=>renderBill();
   const bindSession=(id,key)=>{ const e=$('#'+id); if(e){ e.addEventListener('input',()=>{ S.session[key]=e.value; }); e.addEventListener('change',()=>saveSession({[key]:e.value})); } };
   bindSession('s_van','van'); bindSession('s_booker','booker'); bindSession('s_dm','delivery_man');
+  const vsel=$('#s_van'); if(vsel) vsel.addEventListener('change',()=>{
+    const crew=vanCrew(vsel.value), patch={};
+    const put=(sel,val,key)=>{ if(!val) return; const e=$('#'+sel); if(!e) return;
+      if(![...e.options].some(o=>o.value===val)) e.insertAdjacentHTML('beforeend',`<option value="${esc(val)}">${esc(val)}</option>`);
+      e.value=val; S.session[key]=val; patch[key]=val; };
+    put('s_booker',crew.booker,'booker'); put('s_dm',crew.dm,'delivery_man');
+    saveSession(patch);
+  });
 
   $('#addLine').onclick=()=>{ draft.lines.push(blankLine()); rebind(); };
   $('#view').querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{ draft.lines.splice(+b.dataset.rm,1); if(!draft.lines.length)draft.lines.push(blankLine()); rebind(); });
@@ -1015,7 +1024,8 @@ async function saveBill(){
     }
     const r = await call(window.api.createBill, payload);
     lastBillId = r.id; S.sessionCount++;
-    toast(`Saved ${r.bill_number} · ${money(r.total)} — ready for next`);
+    const dnote = (r.bill_date && r.bill_date!==payload.bill_date) ? ` on ${r.bill_date}` : '';
+    toast(`Saved ${r.bill_number} · ${money(r.total)}${dnote} — ready for next`);
     draft = newDraft();
     try{ S.customers = await call(window.api.getCustomers); }catch(e){}
     renderBill();
@@ -1379,7 +1389,7 @@ VIEWS.returns = async (preset) => {
     try{ await call(window.api.deleteReturn,+b.dataset.d); toast('Deleted'); VIEWS.returns(S._retFilter); }catch(e){ toast(e.message,true); }
   });
 };
-function newReturnDraft(){ return { return_date:today(), bill_id:null, bill_number:'', shop_code:'', shop_name:'', shop_addr:'',
+function newReturnDraft(){ return { return_date:(S.settings && S.settings.current_day) || today(), bill_id:null, bill_number:'', shop_code:'', shop_name:'', shop_addr:'',
   van:S.session.van, booker:S.session.booker, delivery_man:S.session.delivery_man,
   tax_pct:+(S.settings.tax_rate||0), notes:'', lines:[ blankRLine() ] }; }
 function blankRLine(){ return { code:'', product_id:'', bill_item_id:null, name:'', bkind:'SALE', kind:'GOOD',
@@ -1505,6 +1515,14 @@ function renderReturn(){
     e.addEventListener('input',()=>{ d[key]=e.value; if(!linked) S.session[key]=e.value; });
     if(!linked) e.addEventListener('change',()=>saveSession({[key]:e.value})); };
   bindSession('s_van','van'); bindSession('s_booker','booker'); bindSession('s_dm','delivery_man');
+  const vsel=$('#s_van'); if(vsel) vsel.addEventListener('change',()=>{
+    const crew=vanCrew(vsel.value), patch={};
+    const put=(sel,val,key)=>{ if(!val) return; const e=$('#'+sel); if(!e) return;
+      if(![...e.options].some(o=>o.value===val)) e.insertAdjacentHTML('beforeend',`<option value="${esc(val)}">${esc(val)}</option>`);
+      e.value=val; d[key]=val; if(!linked) S.session[key]=val; patch[key]=val; };
+    put('s_booker',crew.booker,'booker'); put('s_dm',crew.dm,'delivery_man');
+    if(!linked) saveSession(patch);
+  });
 
   // credit is always the cell before the ✕ — the bill-linked table carries two extra columns
   const upLine=(i)=>{ const tr=$('#rRows').children[i]; if(!tr) return;
@@ -1566,7 +1584,8 @@ async function saveReturn(){
     tax_pct:+d.tax_pct||0, notes:d.notes, items };
   _savingReturn=true;
   try{ const r=await call(window.api.createReturn, payload);
-    toast(`Saved ${r.return_number} · ${money(r.total)}`); returnDraft=null; VIEWS.returns(S._retFilter); }
+    const dnote=(r.return_date && r.return_date!==payload.return_date)?` on ${r.return_date}`:'';
+    toast(`Saved ${r.return_number} · ${money(r.total)}${dnote}`); returnDraft=null; VIEWS.returns(S._retFilter); }
   catch(e){ toast(e.message,true); }
   finally{ _savingReturn=false; }
 }
@@ -2071,7 +2090,7 @@ VIEWS.purchases = async () => {
 };
 function blankPLine(){ return { code:'', product_id:'', pcs:0, unit_cost:0 }; }
 function pLineAmt(l){ return (+l.pcs||0)*(+l.unit_cost||0); }
-function purchaseForm(){ purchaseDraft = { purchase_date:today(), vehicle_no:'', supplier:'', notes:'', lines:[ blankPLine() ] }; renderPurchase(); }
+function purchaseForm(){ purchaseDraft = { purchase_date:(S.settings && S.settings.current_day) || today(), vehicle_no:'', supplier:'', notes:'', lines:[ blankPLine() ] }; renderPurchase(); }
 function renderPurchase(){
   const d=purchaseDraft; const total=d.lines.reduce((s,l)=>s+pLineAmt(l),0);
   $('#view').innerHTML = `
@@ -2121,7 +2140,8 @@ async function savePurchase(){
   if(!items.length){ toast('Add at least one product',true); return; }
   _savingPurchase=true;
   try{ const r=await call(window.api.createPurchase,{purchase_date:d.purchase_date,vehicle_no:d.vehicle_no,supplier:d.supplier,notes:d.notes,items});
-    toast(`Saved ${r.purchase_number} · ${money(r.total)}`); purchaseDraft=null; VIEWS.purchases(); }catch(e){ toast(e.message,true); }
+    const dnote=(r.purchase_date && r.purchase_date!==d.purchase_date)?` on ${r.purchase_date}`:'';
+    toast(`Saved ${r.purchase_number} · ${money(r.total)}${dnote}`); purchaseDraft=null; VIEWS.purchases(); }catch(e){ toast(e.message,true); }
   finally{ _savingPurchase=false; }
 }
 async function viewPurchase(id){
@@ -2189,6 +2209,7 @@ function shopModal(c){
 
 // ── Vans & Staff (routes) ───────────────────────────────────────
 VIEWS.routes = async () => {
+  await refreshCaches();
   $('#view').innerHTML = `
     <div class="head"><h2>Vans &amp; Staff</h2></div>
     <p class="muted" style="margin-top:-8px;margin-bottom:14px">Add your vans, order bookers and delivery men here. Add each one once — they then appear as dropdowns to pick from on every New Bill and Return.</p>
@@ -2205,9 +2226,21 @@ VIEWS.routes = async () => {
     </div>
     <p class="muted" style="margin-top:14px">Tip: press <b>Enter</b> after typing a name to add it. Removing a name here does not change bills that already used it.</p>`;
   const MK_LABEL={van:'van',booker:'order booker',dm:'delivery man'};
+  const crewOpts=(arr,cur)=>{ const names=(arr||[]).map(x=>x.name); const all=[...new Set(names.concat(cur&&!names.includes(cur)?[cur]:[]))];
+    return `<option value="">— none —</option>`+all.map(n=>`<option value="${esc(n)}"${n===cur?' selected':''}>${esc(n)}</option>`).join(''); };
   async function renderMasters(kind){
     const items = await call(window.api.listMasters, kind);
     const box=$('#list_'+kind); if(!box) return;
+    if(kind==='van'){
+      box.innerHTML = items.length
+        ? `<div class="tablewrap"><table><thead><tr><th>Van</th><th>Booker</th><th>Delivery Man</th><th></th></tr></thead><tbody>${items.map(m=>`<tr data-van="${esc(m.name)}"><td style="font-weight:600">${esc(m.name)}</td><td><select data-crew="booker">${crewOpts(S.bookers,m.booker)}</select></td><td><select data-crew="dm">${crewOpts(S.dms,m.dm)}</select></td><td class="num"><button class="btn sm ghost" data-del="${m.id}">✕</button></td></tr>`).join('')}</tbody></table></div>`
+        : '<span class="muted" style="font-size:12px">None yet.</span>';
+      box.querySelectorAll('[data-crew]').forEach(sel=>sel.onchange=async()=>{ const tr=sel.closest('tr'); const van=tr.dataset.van;
+        const bk=tr.querySelector('[data-crew="booker"]').value, dm=tr.querySelector('[data-crew="dm"]').value;
+        try{ await call(window.api.setVanCrew,van,bk,dm); await refreshCaches(); renderMasters('van'); }catch(e){ toast(e.message,true); } });
+      box.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{ try{ await call(window.api.deleteMaster,+b.dataset.del); renderMasters(kind); refreshCaches(); }catch(e){ toast(e.message,true); } });
+      return;
+    }
     box.innerHTML = items.length
       ? items.map(m=>`<span style="display:inline-flex;align-items:center;gap:6px;background:rgba(128,128,128,.12);border:1px solid var(--line);border-radius:6px;padding:4px 5px 4px 10px;margin:0 6px 6px 0;font-size:12.5px">${esc(m.name)}<button class="btn sm ghost" style="padding:1px 6px" data-del="${m.id}">✕</button></span>`).join('')
       : '<span class="muted" style="font-size:12px">None yet.</span>';
@@ -2260,11 +2293,11 @@ VIEWS.settings = async () => {
     </div>
 
     <div class="card" style="max-width:640px;margin-top:12px">
-      <label>Day open / close</label>
-      <p class="muted" style="margin:6px 0 12px">Close a date to stop new bills being added on that day. Re-open it any time to allow edits or new bills.</p>
-      <div class="row" style="align-items:flex-end;gap:12px">
-        <div style="flex:0 0 180px"><label>Date</label><input id="dc_date" type="date" value="${today()}"></div>
-        <button class="btn" id="dc_close">Close this date</button>
+      <label>Working day</label>
+      <p class="muted" style="margin:6px 0 12px">New bills, purchases and returns are dated to the working day below. It stays put across real calendar days until you close it — closing moves it to the next open day. New entries are never blocked; they roll onto the next open day. Closed days stay locked so their records can't be edited or deleted.</p>
+      <div class="row" style="align-items:center;gap:12px">
+        <div>Currently working on <b>${esc(S.settings.current_day||today())}</b></div>
+        <button class="btn right" id="dc_close">Close working day (${esc(S.settings.current_day||today())}) &amp; start next</button>
       </div>
       <div id="dc_list" style="margin-top:14px"></div>
     </div>
@@ -2328,10 +2361,11 @@ VIEWS.settings = async () => {
           ${days.map(d=>`<tr><td>${esc(d.date)}</td><td class="muted">${esc(d.closed_at)||''}</td><td class="num"><button class="btn sm ghost" data-open="${esc(d.date)}">Open</button></td></tr>`).join('')}
         </tbody></table></div>`
       : '<p class="muted">No dates are closed.</p>';
-    box.querySelectorAll('[data-open]').forEach(b=>b.onclick=async()=>{ try{ await call(window.api.openDay, b.dataset.open); toast('Date re-opened'); renderClosedDays(); }catch(e){ toast(e.message,true); } });
+    box.querySelectorAll('[data-open]').forEach(b=>b.onclick=async()=>{ try{ const r=await call(window.api.openDay, b.dataset.open); if(r&&r.current_day) S.settings.current_day=r.current_day; toast('Date re-opened'); VIEWS.settings(); }catch(e){ toast(e.message,true); } });
   }
-  $('#dc_close').onclick=async()=>{ const d=$('#dc_date').value; if(!d){ toast('Pick a date',true); return; }
-    try{ await call(window.api.closeDay, d); toast(`Closed ${d}`); renderClosedDays(); }catch(e){ toast(e.message,true); } };
+  $('#dc_close').onclick=async()=>{ const d=S.settings.current_day||today();
+    try{ const r=await call(window.api.closeDay, d); if(r&&r.current_day) S.settings.current_day=r.current_day;
+      toast(`Closed ${d} — now working on ${S.settings.current_day}`); VIEWS.settings(); }catch(e){ toast(e.message,true); } };
   renderClosedDays();
 
   // Vans / Bookers / Delivery Men manager
