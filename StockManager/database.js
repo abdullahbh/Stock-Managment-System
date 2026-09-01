@@ -491,7 +491,8 @@ const _pct = (v) => Math.min(100, Math.max(0, Number(v) || 0));
 
 // ── Products ────────────────────────────────────────────────────
 function getAllProducts() {
-  return db.prepare('SELECT * FROM products WHERE active=1 ORDER BY sku_code').all();
+  return db.prepare(`SELECT * FROM products WHERE active=1
+    ORDER BY (sku_code GLOB '*[^0-9]*'), CAST(sku_code AS INTEGER), sku_code`).all();
 }
 function addProduct(p) {
   const info = db.prepare(
@@ -1210,7 +1211,13 @@ function generateLoadForm(data) {
       `INSERT INTO load_form_lines (load_form_id, product_id, sku_code, product_name, pcs_per_dozen,
          pieces, dozens, free_pcs, replace_pcs, scheme_note)
        VALUES (?,?,?,?,?,?,?,?,?,?)`);
-    const sorted = Object.values(agg).sort((x, y) => String(x.sku_code).localeCompare(String(y.sku_code)));
+    const numeric = (c) => /^[0-9]+$/.test(String(c));   // all-digit codes sort first, in number order
+    const sorted = Object.values(agg).sort((x, y) => {
+      const nx = numeric(x.sku_code), ny = numeric(y.sku_code);
+      if (nx && ny) return Number(x.sku_code) - Number(y.sku_code);
+      if (nx !== ny) return nx ? -1 : 1;
+      return String(x.sku_code).localeCompare(String(y.sku_code));
+    });
     for (const a of sorted) {
       const dozens = a.pcs_per_dozen ? round2(a.pieces / a.pcs_per_dozen) : 0;
       insLine.run(loadId, a.product_id, a.sku_code, a.product_name, a.pcs_per_dozen,
@@ -1224,7 +1231,8 @@ function generateLoadForm(data) {
 function getLoadForm(id) {
   const lf = db.prepare('SELECT * FROM load_forms WHERE id=?').get(id);
   if (!lf) return null;
-  lf.lines = db.prepare('SELECT * FROM load_form_lines WHERE load_form_id=? ORDER BY sku_code').all(id);
+  lf.lines = db.prepare(`SELECT * FROM load_form_lines WHERE load_form_id=?
+    ORDER BY (sku_code GLOB '*[^0-9]*'), CAST(sku_code AS INTEGER), sku_code`).all(id);
   lf.bills = db.prepare(
     `SELECT b.* FROM bills b JOIN load_form_bills l ON l.bill_id=b.id
      WHERE l.load_form_id=? ORDER BY b.bill_number`).all(id);
