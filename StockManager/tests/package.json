@@ -1,0 +1,12 @@
+{
+  "name": "stockmanager-tests",
+  "private": true,
+  "description": "Integrity & correctness test suites for StockManager",
+  "scripts": {
+    "test": "node run-all.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "jsdom": "^24.0.0"
+  }
+}
