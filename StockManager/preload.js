@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
   listClosedDays: () => invoke('days:list'),
   // purchases
   createPurchase:(p) => invoke('purchases:create', p),
+  updatePurchase:(id,p) => invoke('purchases:update', {id, purchase:p}),
   getPurchases: () => invoke('purchases:getAll'),
   getPurchaseById:(id) => invoke('purchases:getById', id),
   deletePurchase:(id) => invoke('purchases:delete', id),

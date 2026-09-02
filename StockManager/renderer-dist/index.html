@@ -2080,22 +2080,31 @@ VIEWS.purchases = async () => {
     <p class="muted" style="margin-top:-8px;margin-bottom:14px">Record stock you buy in (vehicle, supplier, products). Saving a purchase adds the pieces to inventory and updates each product’s cost.</p>
     <div class="tablewrap"><table><thead><tr><th>No</th><th>Date</th><th>Vehicle</th><th>Supplier</th><th class="num">Total</th><th></th></tr></thead><tbody>
       ${list.map(p=>`<tr><td>${esc(p.purchase_number)}</td><td>${esc(p.purchase_date)}</td><td>${esc(p.vehicle_no)||''}</td><td>${esc(p.supplier)||''}</td><td class="num">${money(p.total)}</td>
-        <td class="num"><button class="btn sm ghost" data-v="${p.id}">View</button><button class="btn sm danger" data-d="${p.id}">Del</button></td></tr>`).join('')
+        <td class="num"><button class="btn sm ghost" data-v="${p.id}">View</button><button class="btn sm ghost" data-e="${p.id}">Edit</button><button class="btn sm danger" data-d="${p.id}">Del</button></td></tr>`).join('')
         || '<tr><td colspan="6" class="empty">No purchases yet.</td></tr>'}
     </tbody></table></div>`;
   $('#newP').onclick=()=>purchaseForm();
   $('#view').querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>viewPurchase(+b.dataset.v));
+  $('#view').querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>editPurchase(+b.dataset.e));
   $('#view').querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{ if(!await appConfirm('Delete purchase and remove its stock?',{danger:true,ok:'Delete'}))return;
     try{ await call(window.api.deletePurchase,+b.dataset.d); toast('Deleted'); VIEWS.purchases(); }catch(e){ toast(e.message,true); } });
 };
 function blankPLine(){ return { code:'', product_id:'', pcs:0, unit_cost:0 }; }
 function pLineAmt(l){ return (+l.pcs||0)*(+l.unit_cost||0); }
 function purchaseForm(){ purchaseDraft = { purchase_date:(S.settings && S.settings.current_day) || today(), vehicle_no:'', supplier:'', notes:'', lines:[ blankPLine() ] }; renderPurchase(); }
+async function editPurchase(id){
+  const p=await call(window.api.getPurchaseById,id); if(!p){ toast('Not found',true); return; }
+  await refreshCaches();
+  purchaseDraft = { editId:p.id, editNumber:p.purchase_number, purchase_date:p.purchase_date, vehicle_no:p.vehicle_no||'', supplier:p.supplier||'', notes:p.notes||'',
+    lines:(p.items||[]).map(it=>({ code:it.sku_code, product_id:it.product_id, pcs:it.pcs, unit_cost:it.unit_cost, _costFor:it.product_id })) };
+  if(!purchaseDraft.lines.length) purchaseDraft.lines=[blankPLine()];
+  S.view='purchases'; renderNav(); renderPurchase();
+}
 function renderPurchase(){
   const d=purchaseDraft; const total=d.lines.reduce((s,l)=>s+pLineAmt(l),0);
   $('#view').innerHTML = `
-    <div class="head"><h2>New Purchase</h2><div class="row">
-      <button class="btn ghost" id="cancel">Cancel</button><button class="btn" id="save">Save Purchase</button></div></div>
+    <div class="head"><h2>${d.editId?('Edit Purchase '+esc(d.editNumber||'')):'New Purchase'}</h2><div class="row">
+      <button class="btn ghost" id="cancel">Cancel</button><button class="btn" id="save">${d.editId?'Save Changes':'Save Purchase'}</button></div></div>
     <div class="card"><div class="f3">
       <div><label>Date</label><input id="p_date" type="date" value="${d.purchase_date}"></div>
       <div><label>Vehicle No</label><input id="p_veh" value="${esc(d.vehicle_no)}" placeholder="ABC-123"></div>
@@ -2139,20 +2148,26 @@ async function savePurchase(){
   const d=purchaseDraft; const items=d.lines.filter(l=>l.product_id).map(l=>({product_id:+l.product_id,pcs:+l.pcs||0,unit_cost:+l.unit_cost||0}));
   if(!items.length){ toast('Add at least one product',true); return; }
   _savingPurchase=true;
-  try{ const r=await call(window.api.createPurchase,{purchase_date:d.purchase_date,vehicle_no:d.vehicle_no,supplier:d.supplier,notes:d.notes,items});
-    const dnote=(r.purchase_date && r.purchase_date!==d.purchase_date)?` on ${r.purchase_date}`:'';
-    toast(`Saved ${r.purchase_number} · ${money(r.total)}${dnote}`); purchaseDraft=null; VIEWS.purchases(); }catch(e){ toast(e.message,true); }
+  const payload={purchase_date:d.purchase_date,vehicle_no:d.vehicle_no,supplier:d.supplier,notes:d.notes,items};
+  try{
+    if(d.editId){ const r=await call(window.api.updatePurchase,d.editId,payload);
+      toast(`Updated ${r.purchase_number} · ${money(r.total)}`); }
+    else { const r=await call(window.api.createPurchase,payload);
+      const dnote=(r.purchase_date && r.purchase_date!==d.purchase_date)?` on ${r.purchase_date}`:'';
+      toast(`Saved ${r.purchase_number} · ${money(r.total)}${dnote}`); }
+    purchaseDraft=null; VIEWS.purchases(); }catch(e){ toast(e.message,true); }
   finally{ _savingPurchase=false; }
 }
 async function viewPurchase(id){
   const p=await call(window.api.getPurchaseById,id); if(!p){ toast('Not found',true); return; }
   S.view='purchases'; renderNav();
-  $('#view').innerHTML=`<div class="head"><h2>Purchase ${esc(p.purchase_number)}</h2><button class="btn ghost" data-nav="purchases">← Back</button></div>
+  $('#view').innerHTML=`<div class="head"><h2>Purchase ${esc(p.purchase_number)}</h2><div class="row"><button class="btn ghost" data-nav="purchases">← Back</button><button class="btn" id="editP">Edit</button></div></div>
     <div class="card"><div class="f3"><div><label>Date</label><div>${esc(p.purchase_date)}</div></div><div><label>Vehicle</label><div>${esc(p.vehicle_no)||'—'}</div></div><div><label>Supplier</label><div>${esc(p.supplier)||'—'}</div></div></div>
       <div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Code</th><th>Product</th><th class="num">Pieces</th><th class="num">Unit Cost</th><th class="num">Amount</th></tr></thead><tbody>
         ${p.items.map(it=>`<tr><td>${esc(it.sku_code)}</td><td>${esc(it.product_name)}</td><td class="num">${num(it.pcs)}</td><td class="num">${money(it.unit_cost)}</td><td class="num">${money(it.line_total)}</td></tr>`).join('')}
       </tbody></table></div>
       <div class="row" style="justify-content:flex-end;margin-top:12px"><b style="color:var(--accent)">Total ${money(p.total)}</b></div></div>`;
+  const eb=$('#editP'); if(eb) eb.onclick=()=>editPurchase(p.id);
 }
 
 // ── Shops (customers) ───────────────────────────────────────────

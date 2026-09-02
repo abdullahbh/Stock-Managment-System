@@ -9,7 +9,7 @@ const fs = require('fs');
 const HERE = __dirname;
 const list = fs.readdirSync(HERE).filter(f => /^test-.+\.js$/.test(f) || f === 'preview-check.js').sort();
 // UI suites use jsdom and must NOT preload the sqlite shim; everything else is a DB suite.
-const UI = new Set(['test-billrate.js', 'test-freegroup-ui.js', 'test-editbill-rate.js', 'test-ui-forms.js', 'test-van-dropdown.js', 'test-workingday-ui.js']);
+const UI = new Set(['test-billrate.js', 'test-freegroup-ui.js', 'test-editbill-rate.js', 'test-ui-forms.js', 'test-van-dropdown.js', 'test-workingday-ui.js', 'test-purchase-edit-ui.js']);
 
 let failed = 0;
 const results = [];

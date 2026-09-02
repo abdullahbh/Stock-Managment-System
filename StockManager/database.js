@@ -792,6 +792,43 @@ function createPurchase(p){
   });
   return tx();
 }
+function updatePurchase(id, p){
+  const tx=db.transaction(()=>{
+    const old=db.prepare('SELECT * FROM purchases WHERE id=?').get(id);
+    if(!old) throw new Error('Purchase not found');
+    if(isDayClosed(old.purchase_date)) throw new Error(`Date ${old.purchase_date} is closed. Re-open it to edit purchases.`);
+    const pdate = p.purchase_date || old.purchase_date;
+    if(isDayClosed(pdate)) throw new Error(`Date ${pdate} is closed. Re-open it to edit purchases.`);
+    // build and validate the new lines BEFORE touching any stock
+    const items = (p.items||[]).filter(it=>it.product_id).map(it=>{
+      const prod=db.prepare('SELECT * FROM products WHERE id=?').get(it.product_id);
+      if(!prod) throw new Error(`Product not found: ${it.product_id}`);
+      const pcs=Number(it.pcs)||0;
+      const unit_cost=it.unit_cost!=null ? Number(it.unit_cost) : (prod.cost||0);
+      return { product_id:prod.id, sku_code:prod.sku_code, product_name:prod.name, pcs, unit_cost, line_total:round2(pcs*unit_cost) };
+    });
+    if(!items.length) throw new Error('Add at least one product');
+    const total=round2(items.reduce((s,l)=>s+l.line_total,0));
+    // take back the stock the old purchase added (blocked if those pieces are already gone), then rebuild it
+    for(const l of db.prepare('SELECT product_id, pcs FROM purchase_items WHERE purchase_id=?').all(id)){
+      const prod=db.prepare('SELECT stock_qty, name FROM products WHERE id=?').get(l.product_id);
+      if(prod && prod.stock_qty < l.pcs) throw new Error(`Cannot edit: ${prod.name} stock would go negative (have ${prod.stock_qty}, purchase added ${l.pcs})`);
+      if(prod) db.prepare('UPDATE products SET stock_qty = stock_qty - ? WHERE id=?').run(l.pcs, l.product_id);
+    }
+    db.prepare('DELETE FROM purchase_items WHERE purchase_id=?').run(id);
+    db.prepare(`UPDATE purchases SET purchase_date=?, vehicle_no=?, supplier=?, total=?, notes=? WHERE id=?`)
+      .run(pdate, p.vehicle_no||'', p.supplier||'', total, p.notes||'', id);
+    const ins=db.prepare(`INSERT INTO purchase_items (purchase_id, product_id, sku_code, product_name, pcs, unit_cost, line_total)
+      VALUES (?,?,?,?,?,?,?)`);
+    for(const l of items){
+      ins.run(id, l.product_id, l.sku_code, l.product_name, l.pcs, l.unit_cost, l.line_total);
+      db.prepare(`UPDATE products SET stock_qty = stock_qty + ?, cost = CASE WHEN ?>0 THEN ? ELSE cost END,
+        updated_at=datetime('now','localtime') WHERE id=?`).run(l.pcs, l.unit_cost, l.unit_cost, l.product_id);
+    }
+    return { id, purchase_number:old.purchase_number, total };
+  });
+  return tx();
+}
 function getAllPurchases(){ return db.prepare('SELECT * FROM purchases ORDER BY created_at DESC LIMIT 200').all(); }
 function getPurchaseById(id){ const p=db.prepare('SELECT * FROM purchases WHERE id=?').get(id); if(!p) return null;
   p.items=db.prepare('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY id').all(id); return p; }
@@ -1492,7 +1529,7 @@ module.exports = {
   resetData, checkpoint, closeDb, getDataStats, loadSampleData, setSamplePrefixes,
   _schemeCost, createBill, updateBill, getAllBills, getBillById, deleteBill, getBillsMany,
   isDayClosed, closeDay, openDay, listClosedDays, getCurrentDay,
-  createPurchase, getAllPurchases, getPurchaseById, deletePurchase,
+  createPurchase, updatePurchase, getAllPurchases, getPurchaseById, deletePurchase,
   createSalesReturn, getAllSalesReturns, getSalesReturnById, deleteSalesReturn, getBillForReturn, getReturnsForBill,
   createTaxInvoice, getTaxInvoice, processLoadReturn, getBillSummary,
   getCustomers, findCustomer, addCustomer, upsertCustomer, deleteCustomer,

@@ -207,6 +207,7 @@ ipcMain.handle('days:open',     h((date) => dbCall('openDay', date)));
 ipcMain.handle('days:list',     h(() => dbCall('listClosedDays')));
 // purchases
 ipcMain.handle('purchases:create',  h((p) => dbCall('createPurchase', p)));
+ipcMain.handle('purchases:update',  h((d) => dbCall('updatePurchase', d.id, d.purchase)));
 ipcMain.handle('purchases:getAll',  h(() => dbCall('getAllPurchases')));
 ipcMain.handle('purchases:getById', h((id) => dbCall('getPurchaseById', id)));
 ipcMain.handle('purchases:delete',  h((id) => dbCall('deletePurchase', id)));
