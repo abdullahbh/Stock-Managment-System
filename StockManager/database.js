@@ -728,6 +728,7 @@ function updateBill(id, bill) {
       insItem.run(id, l.product_id, l.sku_code, l.product_name, l.kind, l.pcs, l.pcs_per_dozen, l.unit_price, l.cost, l.line_total, l.trade_offer||0, l.trade_offer_pct||0, l.scheme_id, l.note);
       db.prepare('UPDATE products SET stock_qty = stock_qty - ? WHERE id=?').run(l.pcs, l.product_id);
     }
+    _syncLoadForm(_loadFormOfBill(id));   // if this bill is on a load form, refresh its loaded quantities
     return { id, bill_number: old.bill_number, subtotal: c.subtotal, trade_offer: c.tradeOffer, total: c.total };
   });
   return tx();
@@ -1100,8 +1101,10 @@ function deleteBill(id) {
     for (const l of db.prepare('SELECT product_id, pcs FROM bill_items WHERE bill_id=?').all(id)) {
       db.prepare('UPDATE products SET stock_qty = stock_qty + ? WHERE id=?').run(l.pcs, l.product_id);
     }
+    const loadId = _loadFormOfBill(id);
     db.prepare('DELETE FROM load_form_bills WHERE bill_id=?').run(id);
     db.prepare('DELETE FROM bills WHERE id=?').run(id); // cascade removes items
+    _syncLoadForm(loadId);   // rebuild the load form from the bills that remain on it
   });
   tx();
   return { success: true };
@@ -1263,6 +1266,53 @@ function generateLoadForm(data) {
     return { id: loadId, form_number: formNumber };
   });
   return tx();
+}
+
+// a bill on a load form was edited/deleted — rebuild that form's loaded quantities from the
+// current bills, keeping the return/check columns (load2/rtg/dented/leak/returned) the user entered.
+function _loadCodeCmp(a, b){
+  const na = /^[0-9]+$/.test(String(a)), nb = /^[0-9]+$/.test(String(b));
+  if (na && nb) return Number(a) - Number(b);
+  if (na !== nb) return na ? -1 : 1;
+  return String(a).localeCompare(String(b));
+}
+function _syncLoadForm(loadId){
+  if (!loadId) return;
+  const billIds = db.prepare('SELECT bill_id FROM load_form_bills WHERE load_form_id=?').all(loadId).map(r => r.bill_id);
+  const keep = {};   // preserve the return columns the user filled in, per product
+  for (const l of db.prepare('SELECT * FROM load_form_lines WHERE load_form_id=?').all(loadId))
+    keep[l.product_id] = { load2_pcs: l.load2_pcs||0, rtg_pcs: l.rtg_pcs||0, dented_pcs: l.dented_pcs||0, leak_pcs: l.leak_pcs||0, returned_pcs: l.returned_pcs||0 };
+  const agg = {};
+  if (billIds.length) {
+    const ph = billIds.map(() => '?').join(',');
+    for (const r of db.prepare(`SELECT bi.* FROM bill_items bi WHERE bi.bill_id IN (${ph})`).all(...billIds)) {
+      if (!agg[r.product_id]) agg[r.product_id] = { product_id: r.product_id, sku_code: r.sku_code, product_name: r.product_name,
+        pcs_per_dozen: r.pcs_per_dozen || 12, pieces: 0, free_pcs: 0, replace_pcs: 0, schemes: new Set() };
+      const a = agg[r.product_id];
+      if (r.kind === 'SALE') a.pieces += r.pcs;
+      else if (r.kind === 'FREE') { a.free_pcs += r.pcs; if (r.note) a.schemes.add(r.note); }
+      else if (r.kind === 'REPLACE') a.replace_pcs += r.pcs;
+    }
+  }
+  db.prepare('DELETE FROM load_form_lines WHERE load_form_id=?').run(loadId);
+  const insLine = db.prepare(
+    `INSERT INTO load_form_lines (load_form_id, product_id, sku_code, product_name, pcs_per_dozen,
+       pieces, dozens, free_pcs, replace_pcs, scheme_note, load2_pcs, rtg_pcs, dented_pcs, leak_pcs, returned_pcs)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  for (const a of Object.values(agg).sort((x, y) => _loadCodeCmp(x.sku_code, y.sku_code))) {
+    const dozens = a.pcs_per_dozen ? round2(a.pieces / a.pcs_per_dozen) : 0;
+    const k = keep[a.product_id] || {};
+    insLine.run(loadId, a.product_id, a.sku_code, a.product_name, a.pcs_per_dozen,
+      a.pieces, dozens, a.free_pcs, a.replace_pcs, Array.from(a.schemes).join(', '),
+      k.load2_pcs || 0, k.rtg_pcs || 0, k.dented_pcs || 0, k.leak_pcs || 0, k.returned_pcs || 0);
+  }
+  const total = billIds.length
+    ? round2(db.prepare(`SELECT COALESCE(SUM(total),0) t FROM bills WHERE id IN (${billIds.map(() => '?').join(',')})`).get(...billIds).t) : 0;
+  db.prepare('UPDATE load_forms SET booking_amount=?, bill_count=? WHERE id=?').run(total, billIds.length, loadId);
+}
+function _loadFormOfBill(billId){
+  const r = db.prepare('SELECT load_form_id FROM load_form_bills WHERE bill_id=?').get(billId);
+  return r ? r.load_form_id : null;
 }
 
 function getLoadForm(id) {
